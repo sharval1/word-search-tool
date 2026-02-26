@@ -12,7 +12,7 @@ from search_engine import (
     search_keyword,
 )
 
-st.set_page_config(page_title="Word Search Tool", page_icon="📄", layout="centered")
+st.set_page_config(page_title="Word Search Tool", page_icon="📄", layout="wide")
 st.title("📄 Word Document Search")
 st.caption("Upload your Word files, then search by keyword to find all related content.")
 
@@ -68,11 +68,14 @@ if uploaded_files:
             for doc_name, img_bytes, img_name in all_images:
                 images_by_doc.setdefault(doc_name, []).append((img_bytes, img_name))
 
-            st.markdown(f"**{len(docs_with_matches)}** document(s) found for **\"{keyword}\"**.")
-
             file_bytes_by_name = st.session_state.get("file_bytes_by_name", {})
 
-            for doc_name in sorted(docs_with_matches):
+            # Build result data for each document (for sorting + expanders)
+            def highlight(s):
+                return re.sub(re.escape(keyword), lambda m: f"<strong>{m.group(0)}</strong>", s, flags=re.IGNORECASE)
+
+            doc_results = []
+            for doc_name in docs_with_matches:
                 doc_paras = [(f, t) for f, t in all_paragraphs if f == doc_name]
                 indices_to_include = set()
                 matching_texts_for_doc = []
@@ -90,12 +93,9 @@ if uploaded_files:
                             break
                 sorted_indices = sorted(indices_to_include)
                 complete_text = "\n\n".join(doc_paras[i][1] for i in sorted_indices)
-
-                def highlight(s):
-                    return re.sub(re.escape(keyword), lambda m: f"<strong>{m.group(0)}</strong>", s, flags=re.IGNORECASE)
+                doc_keyword_count = len(re.findall(re.escape(keyword), complete_text, re.IGNORECASE))
                 highlighted = highlight(html.escape(complete_text)).replace("\n", "<br>")
                 doc_imgs = images_by_doc.get(doc_name, [])
-                # Pick image nearest to keyword in document (or first if parsing fails)
                 nearest = None
                 if doc_imgs and doc_name in file_bytes_by_name:
                     all_imgs_for_doc = [(doc_name, b, n) for _dn, b, n in all_images if _dn == doc_name]
@@ -107,27 +107,88 @@ if uploaded_files:
                     )
                 if not nearest and doc_imgs:
                     nearest = (doc_imgs[0][0], doc_imgs[0][1])
+                doc_results.append({
+                    "name": doc_name,
+                    "count": doc_keyword_count,
+                    "complete_text": complete_text,
+                    "highlighted": highlighted,
+                    "nearest": nearest,
+                })
 
-                with st.container():
-                    st.markdown("---")
-                    st.markdown(f"### 📄 {doc_name}")
-                    # Layout: text and image side by side (image on right)
+            total_count = sum(r["count"] for r in doc_results)
+
+            # ---- Sidebar: interactive options ----
+            with st.sidebar:
+                st.markdown("### ⚙️ Options")
+                sort_by = st.radio(
+                    "Sort results by",
+                    ["Document name (A–Z)", "Keyword count (highest first)"],
+                    key="sort_by",
+                )
+                show_images = st.checkbox("Show relevant image", value=True, key="show_images")
+                min_count = st.slider(
+                    "Minimum keyword count (filter documents)",
+                    min_value=0,
+                    max_value=max((r["count"] for r in doc_results), default=0),
+                    value=0,
+                    key="min_count",
+                )
+                st.markdown("---")
+                # Download summary
+                summary_lines = [
+                    f"Keyword: \"{keyword}\"",
+                    f"Total occurrences: {total_count}",
+                    f"Documents: {len(doc_results)}",
+                    "",
+                ]
+                for r in doc_results:
+                    if r["count"] >= min_count:
+                        summary_lines.append(f"  - {r['name']}: {r['count']} time(s)")
+                summary_text = "\n".join(summary_lines)
+                st.download_button(
+                    "📥 Download results summary",
+                    data=summary_text,
+                    file_name=f"search_results_{keyword[:20].replace(' ', '_')}.txt",
+                    mime="text/plain",
+                    key="download_summary",
+                )
+
+            # Filter by min count
+            doc_results = [r for r in doc_results if r["count"] >= min_count]
+            # Sort
+            if sort_by == "Keyword count (highest first)":
+                doc_results = sorted(doc_results, key=lambda r: (-r["count"], r["name"]))
+            else:
+                doc_results = sorted(doc_results, key=lambda r: r["name"])
+
+            # ---- Main area: metrics + expandable results ----
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Documents found", len(doc_results))
+            with col2:
+                st.metric("Total keyword count", total_count)
+            with col3:
+                st.metric("Keyword", f"\"{keyword}\"")
+            st.markdown("---")
+
+            for r in doc_results:
+                with st.expander(f"📄 **{r['name']}** — keyword appears **{r['count']}** time(s)", expanded=True):
                     col_text, col_img = st.columns([2, 1])
                     with col_text:
                         st.markdown("**Related information**")
                         st.markdown(
-                            f'<div style="background-color:#f8f9fa; padding:14px; border-radius:8px; border-left:4px solid #1f77b4;">{highlighted}</div>',
+                            f'<div style="background-color:#f8f9fa; padding:14px; border-radius:8px; border-left:4px solid #1f77b4;">{r["highlighted"]}</div>',
                             unsafe_allow_html=True,
                         )
                     with col_img:
-                        if nearest:
+                        if show_images and r["nearest"]:
                             st.markdown("**Relevant image**")
-                            img_bytes, img_name = nearest
+                            img_bytes, img_name = r["nearest"]
                             try:
                                 st.image(img_bytes, caption=img_name, use_container_width=True)
                             except Exception:
                                 st.caption(f"*{img_name}*")
-                    st.markdown("---")
+            st.markdown("---")
         else:
             st.info(f"No results found for **\"{keyword}\"** in the uploaded documents.")
 else:
