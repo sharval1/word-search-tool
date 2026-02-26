@@ -1,4 +1,5 @@
 """Extract text and images from Word docs and search by keyword."""
+import re
 import xml.etree.ElementTree as ET
 import zipfile
 from io import BytesIO
@@ -183,3 +184,84 @@ def search_keyword(paragraphs: List[Tuple[str, str]], keyword: str) -> List[Tupl
         return []
     k = keyword.strip().lower()
     return [(fname, text) for fname, text in paragraphs if k in text.lower()]
+
+
+def extract_text_from_pdf(file_bytes: bytes, filename: str) -> List[Tuple[str, str]]:
+    """
+    Extract text from each page of a PDF file.
+    Returns list of (filename, text_block) — one block per page, split by paragraphs where possible.
+    """
+    results = []
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(file_bytes))
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text and text.strip():
+                # Split into paragraphs (double newline) or lines for easier search
+                for block in text.split("\n\n"):
+                    block = block.strip()
+                    if block:
+                        results.append((filename, block))
+    except Exception as e:
+        results.append((filename, f"[Error reading PDF: {e}]"))
+    return results
+
+
+def extract_text_from_excel(file_bytes: bytes, filename: str) -> List[Tuple[str, str]]:
+    """
+    Extract text from all cells in an Excel file (.xlsx or .xls).
+    Returns list of (filename, cell_text).
+    """
+    results = []
+    try:
+        name_lower = filename.lower()
+        if name_lower.endswith(".xlsx"):
+            import openpyxl
+            wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+            for sheet in wb.worksheets:
+                for row in sheet.iter_rows(values_only=True):
+                    for cell in row:
+                        if cell is not None and str(cell).strip():
+                            results.append((filename, str(cell).strip()))
+            wb.close()
+        elif name_lower.endswith(".xls"):
+            import xlrd
+            wb = xlrd.open_workbook(file_contents=file_bytes)
+            for sheet in wb.sheets():
+                for row_idx in range(sheet.nrows):
+                    for col_idx in range(sheet.ncols):
+                        cell = sheet.cell_value(row_idx, col_idx)
+                        if cell is not None and str(cell).strip():
+                            results.append((filename, str(cell).strip()))
+    except Exception as e:
+        results.append((filename, f"[Error reading Excel: {e}]"))
+    return results
+
+
+def get_word_suggestions(
+    paragraphs: List[Tuple[str, str]],
+    prefix: str = "",
+    max_suggestions: int = 20,
+) -> List[str]:
+    """
+    Extract unique words from all paragraphs, optionally filter by prefix.
+    Returns list of words sorted by frequency (most common first).
+    """
+    from collections import Counter
+    word_count = Counter()
+    for _fname, text in paragraphs:
+        if not text or not isinstance(text, str):
+            continue
+        words = re.findall(r"\b[a-zA-Z0-9]{2,}\b", text)
+        for w in words:
+            word_count[w.lower()] += 1
+    if not word_count:
+        return []
+    prefix = prefix.strip().lower()
+    if prefix:
+        filtered = [(w, c) for w, c in word_count.items() if w.startswith(prefix) or prefix in w]
+    else:
+        filtered = list(word_count.items())
+    filtered.sort(key=lambda x: (-x[1], x[0]))
+    return [w for w, _ in filtered[:max_suggestions]]

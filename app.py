@@ -1,27 +1,58 @@
 """
 Word Document Search Tool
-Drop .docx files and search by keyword to get all matching content.
+Drop Word, PDF, or Excel files and search by keyword to find all related content.
 """
 import html
 import re
 import streamlit as st
 from search_engine import (
     extract_text_from_docx,
+    extract_text_from_pdf,
+    extract_text_from_excel,
     extract_images_from_docx,
     get_nearest_image,
+    get_word_suggestions,
     search_keyword,
 )
 
-st.set_page_config(page_title="Word Search Tool", page_icon="📄", layout="wide")
-st.title("📄 Word Document Search")
-st.caption("Upload your Word files, then search by keyword to find all related content.")
+st.set_page_config(page_title="Word Search Tool", page_icon="📄", layout="wide", initial_sidebar_state="expanded")
 
-# File uploader - drop multiple Word files
+# Custom CSS for a cleaner, more attractive look
+st.markdown("""
+<style>
+    /* Main container and typography */
+    .stApp { background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%); }
+    h1 { color: #1e293b !important; font-weight: 700 !important; letter-spacing: -0.02em !important; }
+    
+    /* Success message - pill style */
+    .stSuccess { border-radius: 12px !important; background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%) !important; border: none !important; }
+    
+    /* Metric cards */
+    [data-testid="stMetricValue"] { font-size: 1.75rem !important; font-weight: 700 !important; color: #0f172a !important; }
+    [data-testid="stMetricLabel"] { color: #64748b !important; font-weight: 500 !important; }
+    
+    /* Expander header */
+    .streamlit-expanderHeader { background: linear-gradient(90deg, #f1f5f9 0%, #e2e8f0 100%) !important; border-radius: 10px !important; padding: 0.75rem 1rem !important; }
+    
+    /* Suggestion area */
+    div[data-testid="stVerticalBlock"] > div:has(button) { margin-bottom: 0.5rem; }
+    .stButton > button { border-radius: 20px !important; font-weight: 500 !important; transition: all 0.2s !important; }
+    .stButton > button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3) !important; }
+    
+    /* Info message */
+    .stInfo { border-radius: 12px !important; border-left: 4px solid #3b82f6 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📄 Word Document Search")
+st.caption("Upload Word (.docx), PDF, or Excel (.xlsx, .xls) files, then search by keyword.")
+
+# File uploader - Word, PDF, Excel
 uploaded_files = st.file_uploader(
-    "Drop your Word files here",
-    type=["docx"],
+    "Drop your files here",
+    type=["docx", "pdf", "xlsx", "xls"],
     accept_multiple_files=True,
-    help="Select one or more .docx files",
+    help="Select .docx, .pdf, .xlsx, or .xls files",
 )
 
 # Store extracted content in session so we don't re-parse on every keystroke
@@ -42,8 +73,14 @@ if uploaded_files:
         for f in uploaded_files:
             b = f.getvalue()
             file_bytes_by_name[f.name] = b
-            all_paragraphs.extend(extract_text_from_docx(b, f.name))
-            all_images.extend(extract_images_from_docx(b, f.name))
+            name_lower = f.name.lower()
+            if name_lower.endswith(".docx"):
+                all_paragraphs.extend(extract_text_from_docx(b, f.name))
+                all_images.extend(extract_images_from_docx(b, f.name))
+            elif name_lower.endswith(".pdf"):
+                all_paragraphs.extend(extract_text_from_pdf(b, f.name))
+            elif name_lower.endswith((".xlsx", ".xls")):
+                all_paragraphs.extend(extract_text_from_excel(b, f.name))
         st.session_state.all_paragraphs = all_paragraphs
         st.session_state.all_images = all_images
         st.session_state.file_bytes_by_name = file_bytes_by_name
@@ -51,12 +88,31 @@ if uploaded_files:
     total_images = len(st.session_state.all_images)
     st.success(f"Loaded **{len(uploaded_files)}** file(s) • **{len(st.session_state.all_paragraphs)}** text blocks • **{total_images}** image(s) indexed.")
 
+    # Apply clicked suggestion before the keyword widget is created (Streamlit rule)
+    if "suggestion_clicked" in st.session_state:
+        st.session_state["keyword"] = st.session_state.pop("suggestion_clicked")
+
     # Search box
     keyword = st.text_input(
         "Search keyword",
         placeholder="Type any word or phrase...",
         key="keyword",
     )
+
+    # Word suggestions from documents (click to use as keyword)
+    all_paragraphs = st.session_state.all_paragraphs
+    if all_paragraphs:
+        prefix = (keyword or "").strip()
+        suggestions = get_word_suggestions(all_paragraphs, prefix=prefix, max_suggestions=15)
+        if suggestions:
+            st.markdown("**✨ Word suggestions** — *click to search*")
+            cols = st.columns(5)
+            for i, word in enumerate(suggestions[:15]):
+                with cols[i % 5]:
+                    if st.button(word, key=f"sugg_{word}_{i}"):
+                        st.session_state["suggestion_clicked"] = word
+                        st.rerun()
+            st.markdown("---")
 
     if keyword:
         matches = search_keyword(st.session_state.all_paragraphs, keyword)
@@ -72,7 +128,9 @@ if uploaded_files:
 
             # Build result data for each document (for sorting + expanders)
             def highlight(s):
-                return re.sub(re.escape(keyword), lambda m: f"<strong>{m.group(0)}</strong>", s, flags=re.IGNORECASE)
+                # Highlighter-style: yellow background + bold so the search keyword stands out
+                repl = lambda m: f'<span style="background-color:#fef08a;font-weight:700;padding:0 3px;border-radius:3px;">{m.group(0)}</span>'
+                return re.sub(re.escape(keyword), repl, s, flags=re.IGNORECASE)
 
             doc_results = []
             for doc_name in docs_with_matches:
@@ -95,23 +153,28 @@ if uploaded_files:
                 complete_text = "\n\n".join(doc_paras[i][1] for i in sorted_indices)
                 doc_keyword_count = len(re.findall(re.escape(keyword), complete_text, re.IGNORECASE))
                 highlighted = highlight(html.escape(complete_text)).replace("\n", "<br>")
+                # One exact line per occurrence (matching paragraphs only, in order)
+                occurrences_exact = matching_texts_for_doc
                 doc_imgs = images_by_doc.get(doc_name, [])
                 nearest = None
-                if doc_imgs and doc_name in file_bytes_by_name:
-                    all_imgs_for_doc = [(doc_name, b, n) for _dn, b, n in all_images if _dn == doc_name]
-                    nearest = get_nearest_image(
-                        file_bytes_by_name[doc_name],
-                        doc_name,
-                        matching_texts_for_doc,
-                        all_imgs_for_doc,
-                    )
-                if not nearest and doc_imgs:
-                    nearest = (doc_imgs[0][0], doc_imgs[0][1])
+                # Only Word (.docx) has image extraction and nearest-image logic
+                if doc_name.lower().endswith(".docx"):
+                    if doc_imgs and doc_name in file_bytes_by_name:
+                        all_imgs_for_doc = [(doc_name, b, n) for _dn, b, n in all_images if _dn == doc_name]
+                        nearest = get_nearest_image(
+                            file_bytes_by_name[doc_name],
+                            doc_name,
+                            matching_texts_for_doc,
+                            all_imgs_for_doc,
+                        )
+                    if not nearest and doc_imgs:
+                        nearest = (doc_imgs[0][0], doc_imgs[0][1])
                 doc_results.append({
                     "name": doc_name,
                     "count": doc_keyword_count,
                     "complete_text": complete_text,
                     "highlighted": highlighted,
+                    "occurrences_exact": occurrences_exact,
                     "nearest": nearest,
                 })
 
@@ -162,27 +225,39 @@ if uploaded_files:
                 doc_results = sorted(doc_results, key=lambda r: r["name"])
 
             # ---- Main area: metrics + expandable results ----
+            st.markdown('<div style="margin: 1rem 0;">', unsafe_allow_html=True)
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Documents found", len(doc_results))
+                st.metric("📁 Documents found", len(doc_results))
             with col2:
-                st.metric("Total keyword count", total_count)
+                st.metric("🔢 Total count", total_count)
             with col3:
-                st.metric("Keyword", f"\"{keyword}\"")
+                st.metric("🔍 Keyword", f"\"{keyword}\"")
             st.markdown("---")
 
             for r in doc_results:
-                with st.expander(f"📄 **{r['name']}** — keyword appears **{r['count']}** time(s)", expanded=True):
+                with st.expander(f"📄 **{r['name']}** — **{r['count']}** match(es)", expanded=True):
+                    occs = r.get("occurrences_exact") or []
+                    if occs:
+                        st.markdown("**📌 Occurrences** — *scroll to read each exact line*")
+                        for idx, exact_line in enumerate(occs, 1):
+                            exact_highlighted = highlight(html.escape(exact_line)).replace("\n", "<br>")
+                            badge = f'<span style="background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; font-weight: 600;">Occurrence {idx}</span>'
+                            st.markdown(
+                                f'<div style="background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%); padding: 14px 16px; border-radius: 10px; border-left: 4px solid #3b82f6; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">{badge}<div style="margin-top: 10px; color: #334155; line-height: 1.6;">{exact_highlighted}</div></div>',
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown("---")
                     col_text, col_img = st.columns([2, 1])
                     with col_text:
-                        st.markdown("**Related information**")
+                        st.markdown("**📋 Full context**")
                         st.markdown(
-                            f'<div style="background-color:#f8f9fa; padding:14px; border-radius:8px; border-left:4px solid #1f77b4;">{r["highlighted"]}</div>',
+                            f'<div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 18px; border-radius: 10px; border-left: 4px solid #3b82f6; box-shadow: 0 1px 3px rgba(0,0,0,0.06); color: #334155; line-height: 1.65;">{r["highlighted"]}</div>',
                             unsafe_allow_html=True,
                         )
                     with col_img:
-                        if show_images and r["nearest"]:
-                            st.markdown("**Relevant image**")
+                        if show_images and r["nearest"] and r["name"].lower().endswith(".docx"):
+                            st.markdown("**🖼️ Relevant image**")
                             img_bytes, img_name = r["nearest"]
                             try:
                                 st.image(img_bytes, caption=img_name, use_container_width=True)
@@ -190,6 +265,13 @@ if uploaded_files:
                                 st.caption(f"*{img_name}*")
             st.markdown("---")
         else:
-            st.info(f"No results found for **\"{keyword}\"** in the uploaded documents.")
+            st.markdown(
+                f'<div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); padding: 1rem 1.25rem; border-radius: 12px; border-left: 4px solid #f59e0b;">'
+                f'<strong>No results found</strong> for <em>"{html.escape(keyword)}"</em> in the uploaded documents. Try another keyword or check the word suggestions above.</div>',
+                unsafe_allow_html=True,
+            )
 else:
-    st.info("👆 Upload one or more Word (.docx) files to start searching.")
+    st.markdown(
+        '<p style="color: #64748b; font-size: 1.05rem;">👆 Upload one or more <strong>Word</strong> (.docx), <strong>PDF</strong>, or <strong>Excel</strong> (.xlsx, .xls) files to start searching.</p>',
+        unsafe_allow_html=True,
+    )
