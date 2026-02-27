@@ -214,8 +214,9 @@ EXCEL_ROW_SEP = "\x00"
 
 def get_excel_headers(file_bytes: bytes, filename: str) -> dict:
     """
-    Get the first row (column names) of each sheet in an Excel file.
-    Returns dict: (filename, sheet_name) -> [header1, header2, ...]
+    Get the first row (column names) of each sheet. Uses actual row data
+    to determine column count so all column names are fetched even when
+    the first row has fewer cells than later rows.
     """
     headers = {}
     try:
@@ -225,16 +226,22 @@ def get_excel_headers(file_bytes: bytes, filename: str) -> dict:
             wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
             for sheet in wb.worksheets:
                 sheet_name = sheet.title
-                first_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
-                if first_row:
-                    headers[(filename, sheet_name)] = [str(c).strip() if c is not None else "" for c in first_row]
+                rows = list(sheet.iter_rows(values_only=True))
+                if not rows:
+                    continue
+                max_col = max(len(r) for r in rows)
+                first_row = list(rows[0])
+                first_row = first_row + [None] * (max_col - len(first_row))
+                headers[(filename, sheet_name)] = [
+                    str(c).strip() if c is not None else "" for c in first_row
+                ]
             wb.close()
         elif name_lower.endswith(".xls"):
             import xlrd
             wb = xlrd.open_workbook(file_contents=file_bytes)
             for sheet in wb.sheets():
                 sheet_name = sheet.name
-                if sheet.nrows > 0:
+                if sheet.nrows > 0 and sheet.ncols > 0:
                     headers[(filename, sheet_name)] = [
                         str(sheet.cell_value(0, col_idx)).strip()
                         for col_idx in range(sheet.ncols)
@@ -242,6 +249,49 @@ def get_excel_headers(file_bytes: bytes, filename: str) -> dict:
     except Exception:
         pass
     return headers
+
+
+# Row index (0-based) to use as "dates row" in vacation-tracker style sheets (e.g. row 6 = index 5)
+DATES_ROW_INDEX = 5
+
+
+def get_excel_dates_row(file_bytes: bytes, filename: str) -> dict:
+    """
+    Get the dates row (e.g. row 6) of each sheet for vacation-tracker style Excel.
+    Returns dict: (filename, sheet_name) -> [cell1, cell2, ...] padded to max_col.
+    Empty dict if sheet has fewer rows.
+    """
+    dates_row = {}
+    try:
+        name_lower = filename.lower()
+        if name_lower.endswith(".xlsx"):
+            import openpyxl
+            wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+            for sheet in wb.worksheets:
+                sheet_name = sheet.title
+                rows = list(sheet.iter_rows(values_only=True))
+                if len(rows) <= DATES_ROW_INDEX:
+                    continue
+                max_col = max(len(r) for r in rows)
+                row6 = list(rows[DATES_ROW_INDEX])
+                row6 = row6 + [None] * (max_col - len(row6))
+                dates_row[(filename, sheet_name)] = [
+                    str(c).strip() if c is not None else "" for c in row6[:max_col]
+                ]
+            wb.close()
+        elif name_lower.endswith(".xls"):
+            import xlrd
+            wb = xlrd.open_workbook(file_contents=file_bytes)
+            for sheet in wb.sheets():
+                sheet_name = sheet.name
+                if sheet.nrows > DATES_ROW_INDEX and sheet.ncols > 0:
+                    dates_row[(filename, sheet_name)] = [
+                        str(sheet.cell_value(DATES_ROW_INDEX, col_idx)).strip()
+                        for col_idx in range(sheet.ncols)
+                    ]
+    except Exception:
+        pass
+    return dates_row
 
 
 def extract_text_from_excel(file_bytes: bytes, filename: str) -> List[Tuple[str, str]]:
@@ -258,8 +308,11 @@ def extract_text_from_excel(file_bytes: bytes, filename: str) -> List[Tuple[str,
             wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
             for sheet in wb.worksheets:
                 sheet_name = sheet.title
-                for row in sheet.iter_rows(values_only=True):
-                    row_cells = [str(c).strip() if c is not None else "" for c in row]
+                rows = list(sheet.iter_rows(values_only=True))
+                max_col = max(len(r) for r in rows) if rows else 0
+                for row in rows:
+                    row_list = list(row) + [None] * (max_col - len(row))
+                    row_cells = [str(c).strip() if c is not None else "" for c in row_list[:max_col]]
                     if any(row_cells):
                         row_text = f"[Sheet: {sheet_name}]{EXCEL_ROW_SEP}" + EXCEL_ROW_SEP.join(row_cells)
                         results.append((filename, row_text))

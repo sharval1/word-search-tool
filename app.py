@@ -13,6 +13,7 @@ try:
         extract_text_from_pdf,
         extract_text_from_excel,
         extract_images_from_docx,
+        get_excel_dates_row,
         get_excel_headers,
         get_nearest_image,
         get_word_suggestions,
@@ -70,7 +71,9 @@ if "all_images" not in st.session_state:
 if "file_bytes_by_name" not in st.session_state:
     st.session_state.file_bytes_by_name = {}
 if "excel_headers" not in st.session_state:
-    st.session_state.excel_headers = {}  # (filename, sheet_name) -> [col1, col2, ...]
+    st.session_state.excel_headers = {}
+if "excel_dates_row" not in st.session_state:
+    st.session_state.excel_dates_row = {}  # (filename, sheet_name) -> [date1, date2, ...] row 6
 
 if uploaded_files:
     file_ids = [f.name + str(f.size) for f in uploaded_files]
@@ -80,6 +83,7 @@ if uploaded_files:
         all_images = []
         file_bytes_by_name = {}
         excel_headers = {}
+        excel_dates_row = {}
         for f in uploaded_files:
             b = f.getvalue()
             file_bytes_by_name[f.name] = b
@@ -92,10 +96,12 @@ if uploaded_files:
             elif name_lower.endswith((".xlsx", ".xls")):
                 all_paragraphs.extend(extract_text_from_excel(b, f.name))
                 excel_headers.update(get_excel_headers(b, f.name))
+                excel_dates_row.update(get_excel_dates_row(b, f.name))
         st.session_state.all_paragraphs = all_paragraphs
         st.session_state.all_images = all_images
         st.session_state.file_bytes_by_name = file_bytes_by_name
         st.session_state.excel_headers = excel_headers
+        st.session_state.excel_dates_row = excel_dates_row
 
     total_images = len(st.session_state.all_images)
     st.success(f"Loaded **{len(uploaded_files)}** file(s) • **{len(st.session_state.all_paragraphs)}** text blocks • **{total_images}** image(s) indexed.")
@@ -258,6 +264,7 @@ if uploaded_files:
             st.markdown("---")
 
             excel_headers = st.session_state.get("excel_headers", {})
+            excel_dates_row = st.session_state.get("excel_dates_row", {})
 
             for r in doc_results:
                 header_title = f"📄 **{r['name']}**"
@@ -286,11 +293,23 @@ if uploaded_files:
                                     f'<th style="padding:10px 14px;border:1px solid #cbd5e1;background:#f1f5f9;color:#0f172a;font-weight:600;text-align:left;">{html.escape(h)}</th>'
                                     for h in headers
                                 )
+                                dates_row = excel_dates_row.get((r["name"], sheet_name), [])
+                                if len(dates_row) < len(headers):
+                                    dates_row = dates_row + [""] * (len(headers) - len(dates_row))
+                                elif len(dates_row) > len(headers):
+                                    dates_row = dates_row[:len(headers)]
+                                dates_html = "".join(
+                                    f'<th style="padding:8px 10px;border:1px solid #cbd5e1;background:#e0f2fe;color:#0369a1;font-size:0.9rem;">{html.escape(str(d))}</th>'
+                                    for d in dates_row
+                                ) if dates_row else ""
                                 td_html = "".join(
                                     f'<td style="padding:10px 14px;border:1px solid #e2e8f0;background:#fff;color:#334155;">{c}</td>'
                                     for c in cells_highlighted
                                 )
-                                content = f'<p style="color:#64748b;font-size:0.9rem;margin-bottom:8px;">{html.escape(sheet_part)}</p><table style="border-collapse:collapse;width:100%;"><thead><tr>{th_html}</tr></thead><tbody><tr>{td_html}</tr></tbody></table>'
+                                thead_rows = f'<tr>{th_html}</tr>'
+                                if dates_html:
+                                    thead_rows += f'<tr>{dates_html}</tr>'
+                                content = f'<p style="color:#64748b;font-size:0.9rem;margin-bottom:8px;">{html.escape(sheet_part)}</p><table style="border-collapse:collapse;width:100%;"><thead>{thead_rows}</thead><tbody><tr>{td_html}</tr></tbody></table>'
                             else:
                                 exact_highlighted = highlight(html.escape(exact_line)).replace("\n", "<br>")
                                 content = f'<div style="color:#334155;line-height:1.6;">{exact_highlighted}</div>'
@@ -323,6 +342,16 @@ if uploaded_files:
                                         f'<th style="padding:8px 12px;border:1px solid #cbd5e1;background:#f1f5f9;font-weight:600;">{html.escape(h)}</th>' for h in headers
                                     )
                                     rows_html.append(f'<tr>{th_html}</tr>')
+                                    dates_row = excel_dates_row.get((r["name"], sheet_name), [])
+                                    if len(dates_row) < len(headers):
+                                        dates_row = dates_row + [""] * (len(headers) - len(dates_row))
+                                    elif len(dates_row) > len(headers):
+                                        dates_row = dates_row[:len(headers)]
+                                    if dates_row:
+                                        dates_html = "".join(
+                                            f'<th style="padding:6px 10px;border:1px solid #cbd5e1;background:#e0f2fe;color:#0369a1;font-size:0.85rem;">{html.escape(str(d))}</th>' for d in dates_row
+                                        )
+                                        rows_html.append(f'<tr>{dates_html}</tr>')
                                     header_row_done[sheet_name] = True
                                 td_html = "".join(
                                     f'<td style="padding:8px 12px;border:1px solid #e2e8f0;background:#fff;">{c}</td>' for c in cells_highlighted
