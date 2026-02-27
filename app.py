@@ -6,10 +6,12 @@ import html
 import re
 import streamlit as st
 from search_engine import (
+    EXCEL_ROW_SEP,
     extract_text_from_docx,
     extract_text_from_pdf,
     extract_text_from_excel,
     extract_images_from_docx,
+    get_excel_headers,
     get_nearest_image,
     get_word_suggestions,
     search_keyword,
@@ -61,7 +63,9 @@ if "all_paragraphs" not in st.session_state:
 if "all_images" not in st.session_state:
     st.session_state.all_images = []
 if "file_bytes_by_name" not in st.session_state:
-    st.session_state.file_bytes_by_name = {}  # doc_name -> file bytes
+    st.session_state.file_bytes_by_name = {}
+if "excel_headers" not in st.session_state:
+    st.session_state.excel_headers = {}  # (filename, sheet_name) -> [col1, col2, ...]
 
 if uploaded_files:
     file_ids = [f.name + str(f.size) for f in uploaded_files]
@@ -70,6 +74,7 @@ if uploaded_files:
         all_paragraphs = []
         all_images = []
         file_bytes_by_name = {}
+        excel_headers = {}
         for f in uploaded_files:
             b = f.getvalue()
             file_bytes_by_name[f.name] = b
@@ -81,9 +86,11 @@ if uploaded_files:
                 all_paragraphs.extend(extract_text_from_pdf(b, f.name))
             elif name_lower.endswith((".xlsx", ".xls")):
                 all_paragraphs.extend(extract_text_from_excel(b, f.name))
+                excel_headers.update(get_excel_headers(b, f.name))
         st.session_state.all_paragraphs = all_paragraphs
         st.session_state.all_images = all_images
         st.session_state.file_bytes_by_name = file_bytes_by_name
+        st.session_state.excel_headers = excel_headers
 
     total_images = len(st.session_state.all_images)
     st.success(f"Loaded **{len(uploaded_files)}** file(s) • **{len(st.session_state.all_paragraphs)}** text blocks • **{total_images}** image(s) indexed.")
@@ -235,26 +242,83 @@ if uploaded_files:
                 st.metric("🔍 Keyword", f"\"{keyword}\"")
             st.markdown("---")
 
+            excel_headers = st.session_state.get("excel_headers", {})
+
             for r in doc_results:
                 with st.expander(f"📄 **{r['name']}** — **{r['count']}** match(es)", expanded=True):
                     occs = r.get("occurrences_exact") or []
                     if occs:
                         st.markdown("**📌 Occurrences** — *scroll to read each exact line*")
                         for idx, exact_line in enumerate(occs, 1):
-                            exact_highlighted = highlight(html.escape(exact_line)).replace("\n", "<br>")
                             badge = f'<span style="background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; font-weight: 600;">Occurrence {idx}</span>'
+                            if EXCEL_ROW_SEP in exact_line:
+                                parts = exact_line.split(EXCEL_ROW_SEP)
+                                sheet_part = parts[0] if parts else ""
+                                cells = parts[1:] if len(parts) > 1 else []
+                                sheet_name = sheet_part.replace("[Sheet:", "").replace("]", "").strip()
+                                headers = excel_headers.get((r["name"], sheet_name), [])
+                                if len(headers) < len(cells):
+                                    headers = headers + [f"Column {i+1}" for i in range(len(headers), len(cells))]
+                                elif len(headers) > len(cells):
+                                    headers = headers[:len(cells)]
+                                cells_escaped = [html.escape(str(c)) for c in cells]
+                                cells_highlighted = [highlight(c).replace("\n", "<br>") for c in cells_escaped]
+                                th_html = "".join(
+                                    f'<th style="padding:10px 14px;border:1px solid #cbd5e1;background:#f1f5f9;color:#0f172a;font-weight:600;text-align:left;">{html.escape(h)}</th>'
+                                    for h in headers
+                                )
+                                td_html = "".join(
+                                    f'<td style="padding:10px 14px;border:1px solid #e2e8f0;background:#fff;color:#334155;">{c}</td>'
+                                    for c in cells_highlighted
+                                )
+                                content = f'<p style="color:#64748b;font-size:0.9rem;margin-bottom:8px;">{html.escape(sheet_part)}</p><table style="border-collapse:collapse;width:100%;"><thead><tr>{th_html}</tr></thead><tbody><tr>{td_html}</tr></tbody></table>'
+                            else:
+                                exact_highlighted = highlight(html.escape(exact_line)).replace("\n", "<br>")
+                                content = f'<div style="color:#334155;line-height:1.6;">{exact_highlighted}</div>'
                             st.markdown(
-                                f'<div style="background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%); padding: 14px 16px; border-radius: 10px; border-left: 4px solid #3b82f6; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">{badge}<div style="margin-top: 10px; color: #334155; line-height: 1.6;">{exact_highlighted}</div></div>',
+                                f'<div style="background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%); padding: 14px 16px; border-radius: 10px; border-left: 4px solid #3b82f6; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">{badge}<div style="margin-top: 10px;">{content}</div></div>',
                                 unsafe_allow_html=True,
                             )
                         st.markdown("---")
                     col_text, col_img = st.columns([2, 1])
                     with col_text:
                         st.markdown("**📋 Full context**")
-                        st.markdown(
-                            f'<div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 18px; border-radius: 10px; border-left: 4px solid #3b82f6; box-shadow: 0 1px 3px rgba(0,0,0,0.06); color: #334155; line-height: 1.65;">{r["highlighted"]}</div>',
-                            unsafe_allow_html=True,
-                        )
+                        if r["name"].lower().endswith((".xlsx", ".xls")) and EXCEL_ROW_SEP in r.get("complete_text", ""):
+                            rows_html = []
+                            header_row_done = {}
+                            for row_text in r["complete_text"].split("\n\n"):
+                                if EXCEL_ROW_SEP not in row_text:
+                                    continue
+                                parts = row_text.split(EXCEL_ROW_SEP)
+                                sheet_part = parts[0] if parts else ""
+                                sheet_name = sheet_part.replace("[Sheet:", "").replace("]", "").strip()
+                                cells = parts[1:] if len(parts) > 1 else []
+                                headers = excel_headers.get((r["name"], sheet_name), [])
+                                if len(headers) < len(cells):
+                                    headers = headers + [f"Column {i+1}" for i in range(len(headers), len(cells))]
+                                elif len(headers) > len(cells):
+                                    headers = headers[:len(cells)]
+                                cells_highlighted = [highlight(html.escape(str(c))).replace("\n", "<br>") for c in cells]
+                                if sheet_name not in header_row_done:
+                                    th_html = "".join(
+                                        f'<th style="padding:8px 12px;border:1px solid #cbd5e1;background:#f1f5f9;font-weight:600;">{html.escape(h)}</th>' for h in headers
+                                    )
+                                    rows_html.append(f'<tr>{th_html}</tr>')
+                                    header_row_done[sheet_name] = True
+                                td_html = "".join(
+                                    f'<td style="padding:8px 12px;border:1px solid #e2e8f0;background:#fff;">{c}</td>' for c in cells_highlighted
+                                )
+                                rows_html.append(f'<tr>{td_html}</tr>')
+                            full_table = f'<table style="border-collapse:collapse;width:100%;"><tbody>{"".join(rows_html)}</tbody></table>'
+                            st.markdown(
+                                f'<div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 18px; border-radius: 10px; border-left: 4px solid #3b82f6; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">{full_table}</div>',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                f'<div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 16px 18px; border-radius: 10px; border-left: 4px solid #3b82f6; box-shadow: 0 1px 3px rgba(0,0,0,0.06); color: #334155; line-height: 1.65;">{r["highlighted"]}</div>',
+                                unsafe_allow_html=True,
+                            )
                     with col_img:
                         if show_images and r["nearest"] and r["name"].lower().endswith(".docx"):
                             st.markdown("**🖼️ Relevant image**")

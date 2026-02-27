@@ -208,10 +208,47 @@ def extract_text_from_pdf(file_bytes: bytes, filename: str) -> List[Tuple[str, s
     return results
 
 
+# Delimiter used to join Excel row cells (rare in normal cell content)
+EXCEL_ROW_SEP = "\x00"
+
+
+def get_excel_headers(file_bytes: bytes, filename: str) -> dict:
+    """
+    Get the first row (column names) of each sheet in an Excel file.
+    Returns dict: (filename, sheet_name) -> [header1, header2, ...]
+    """
+    headers = {}
+    try:
+        name_lower = filename.lower()
+        if name_lower.endswith(".xlsx"):
+            import openpyxl
+            wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+            for sheet in wb.worksheets:
+                sheet_name = sheet.title
+                first_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+                if first_row:
+                    headers[(filename, sheet_name)] = [str(c).strip() if c is not None else "" for c in first_row]
+            wb.close()
+        elif name_lower.endswith(".xls"):
+            import xlrd
+            wb = xlrd.open_workbook(file_contents=file_bytes)
+            for sheet in wb.sheets():
+                sheet_name = sheet.name
+                if sheet.nrows > 0:
+                    headers[(filename, sheet_name)] = [
+                        str(sheet.cell_value(0, col_idx)).strip()
+                        for col_idx in range(sheet.ncols)
+                    ]
+    except Exception:
+        pass
+    return headers
+
+
 def extract_text_from_excel(file_bytes: bytes, filename: str) -> List[Tuple[str, str]]:
     """
-    Extract text from all cells in an Excel file (.xlsx or .xls).
-    Returns list of (filename, cell_text).
+    Extract text from Excel by row. Returns one (filename, row_text) per row.
+    row_text = "[Sheet: name]" + EXCEL_ROW_SEP + cell1 + EXCEL_ROW_SEP + cell2 + ...
+    so we can split and display as table. Search matches if keyword is in any cell.
     """
     results = []
     try:
@@ -220,20 +257,26 @@ def extract_text_from_excel(file_bytes: bytes, filename: str) -> List[Tuple[str,
             import openpyxl
             wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
             for sheet in wb.worksheets:
+                sheet_name = sheet.title
                 for row in sheet.iter_rows(values_only=True):
-                    for cell in row:
-                        if cell is not None and str(cell).strip():
-                            results.append((filename, str(cell).strip()))
+                    row_cells = [str(c).strip() if c is not None else "" for c in row]
+                    if any(row_cells):
+                        row_text = f"[Sheet: {sheet_name}]{EXCEL_ROW_SEP}" + EXCEL_ROW_SEP.join(row_cells)
+                        results.append((filename, row_text))
             wb.close()
         elif name_lower.endswith(".xls"):
             import xlrd
             wb = xlrd.open_workbook(file_contents=file_bytes)
             for sheet in wb.sheets():
+                sheet_name = sheet.name
                 for row_idx in range(sheet.nrows):
-                    for col_idx in range(sheet.ncols):
-                        cell = sheet.cell_value(row_idx, col_idx)
-                        if cell is not None and str(cell).strip():
-                            results.append((filename, str(cell).strip()))
+                    row_cells = [
+                        str(sheet.cell_value(row_idx, col_idx)).strip()
+                        for col_idx in range(sheet.ncols)
+                    ]
+                    if any(row_cells):
+                        row_text = f"[Sheet: {sheet_name}]{EXCEL_ROW_SEP}" + EXCEL_ROW_SEP.join(row_cells)
+                        results.append((filename, row_text))
     except Exception as e:
         results.append((filename, f"[Error reading Excel: {e}]"))
     return results
