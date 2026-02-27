@@ -167,6 +167,15 @@ if uploaded_files:
                 highlighted = highlight(html.escape(complete_text)).replace("\n", "<br>")
                 # One exact line per occurrence (matching paragraphs only, in order)
                 occurrences_exact = matching_texts_for_doc
+                # For Excel: collect sheet names from occurrences
+                sheet_names = []
+                if doc_name.lower().endswith((".xlsx", ".xls")):
+                    for occ in occurrences_exact:
+                        if EXCEL_ROW_SEP in occ:
+                            sheet_part = occ.split(EXCEL_ROW_SEP)[0]
+                            sn = sheet_part.replace("[Sheet:", "").replace("]", "").strip()
+                            if sn and sn not in sheet_names:
+                                sheet_names.append(sn)
                 doc_imgs = images_by_doc.get(doc_name, [])
                 nearest = None
                 # Only Word (.docx) has image extraction and nearest-image logic
@@ -187,6 +196,7 @@ if uploaded_files:
                     "complete_text": complete_text,
                     "highlighted": highlighted,
                     "occurrences_exact": occurrences_exact,
+                    "sheet_names": sheet_names,
                     "nearest": nearest,
                 })
 
@@ -250,7 +260,11 @@ if uploaded_files:
             excel_headers = st.session_state.get("excel_headers", {})
 
             for r in doc_results:
-                with st.expander(f"📄 **{r['name']}** — **{r['count']}** match(es)", expanded=True):
+                header_title = f"📄 **{r['name']}**"
+                if r.get("sheet_names"):
+                    header_title += f" — *Sheet(s): {', '.join(r['sheet_names'])}*"
+                header_title += f" — **{r['count']}** match(es)"
+                with st.expander(header_title, expanded=True):
                     occs = r.get("occurrences_exact") or []
                     if occs:
                         st.markdown("**📌 Occurrences** — *scroll to read each exact line*")
