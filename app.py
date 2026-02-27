@@ -5,17 +5,22 @@ Drop Word, PDF, or Excel files and search by keyword to find all related content
 import html
 import re
 import streamlit as st
-from search_engine import (
-    EXCEL_ROW_SEP,
-    extract_text_from_docx,
-    extract_text_from_pdf,
-    extract_text_from_excel,
-    extract_images_from_docx,
-    get_excel_headers,
-    get_nearest_image,
-    get_word_suggestions,
-    search_keyword,
-)
+
+try:
+    from search_engine import (
+        EXCEL_ROW_SEP,
+        extract_text_from_docx,
+        extract_text_from_pdf,
+        extract_text_from_excel,
+        extract_images_from_docx,
+        get_excel_headers,
+        get_nearest_image,
+        get_word_suggestions,
+        search_keyword,
+    )
+except ImportError as e:
+    st.error(f"Import error (check requirements.txt and that all files are in the repo): {e}")
+    st.stop()
 
 st.set_page_config(page_title="Word Search Tool", page_icon="📄", layout="wide", initial_sidebar_state="expanded")
 
