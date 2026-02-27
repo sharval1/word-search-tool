@@ -13,12 +13,15 @@ try:
         extract_text_from_pdf,
         extract_text_from_excel,
         extract_images_from_docx,
-        get_excel_dates_row,
         get_excel_headers,
         get_nearest_image,
         get_word_suggestions,
         search_keyword,
     )
+    try:
+        from search_engine import get_excel_dates_row
+    except ImportError:
+        get_excel_dates_row = None
 except ImportError as e:
     st.error(f"Import error (check requirements.txt and that all files are in the repo): {e}")
     st.stop()
@@ -96,7 +99,8 @@ if uploaded_files:
             elif name_lower.endswith((".xlsx", ".xls")):
                 all_paragraphs.extend(extract_text_from_excel(b, f.name))
                 excel_headers.update(get_excel_headers(b, f.name))
-                excel_dates_row.update(get_excel_dates_row(b, f.name))
+                if get_excel_dates_row is not None:
+                    excel_dates_row.update(get_excel_dates_row(b, f.name))
         st.session_state.all_paragraphs = all_paragraphs
         st.session_state.all_images = all_images
         st.session_state.file_bytes_by_name = file_bytes_by_name
